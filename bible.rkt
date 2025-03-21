@@ -240,7 +240,7 @@ empty                            ; empty list (output: '())
 ; As we mentioned in Sec. 1, is possible to use the user-defined types
 ; to represent the grammar of a programming language. In this section we will
 ; apply this by creating a very small language, and the necesary elements for a
-; program written on it to run, that is, a parser, an interpreter and a runner.
+; program written in it to run, that is, a parser, an interpreter and a runner.
 
 ; # Grammar definition (a language that only supports numbers and sums)
 (define-type Exp
