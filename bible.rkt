@@ -243,41 +243,289 @@ empty                            ; empty list (output: '())
 ; program written in it to run, that is, a parser, an interpreter and a runner.
 
 ; # Grammar definition (a language that only supports numbers and sums)
-(define-type Exp
-  [num  (n number?)]
-  [plus (left Exp?) (right Exp?)]
+(define-type NExp
+  [n_num  (n number?)]
+  [n_plus (left NExp?) (right NExp?)]
 )
 
 ; # Parser (note: the input is the program string)
-(define (parse s-expr)
+(define (n_parse s-expr)
   (match s-expr
-    [(? number?) (num s-expr)]
-    [(list '+ l r) (plus (parse l) (parse r))]
-    [(list '++ e) (plus (parse e) (num 1))]    ; Added ++ as syntax sugar (this is: only the parser knows this syntax,
-  )                                            ; and it translates it to proper language grammar, before passing it to
-)                                              ; the interpreter)
+    [(? number?) (n_num s-expr)]
+    [(list '+ l r) (n_plus (n_parse l) (n_parse r))]
+    [(list '++ e) (n_plus (n_parse e) (n_num 1))]    ; Added ++ as syntax sugar (this is: only the parser knows this syntax,
+  )                                                  ; and it translates it to proper language grammar, before passing it to
+)                                                    ; the interpreter)
 
 ; # Interpreter (note: the input is the parsed program string)
-(define (interpret expr)
+(define (n_interpret expr)
   (match expr
-    [(num n) n]
-    [(plus l r) (+ (interpret l) (interpret r))]
+    [(n_num n) n]
+    [(n_plus l r) (+ (n_interpret l) (n_interpret r))]
   )
 )
 
 ; # Runner (note: the input is the program string, and the output is the result of running the program)
-(define (run code)
-  (interpret (parse code))
+(define (n_run code)
+  (n_interpret (n_parse code))
 )
 
 ; # Testing the micro language
-(test (run '1) 1)
-(test (run '2.3) 2.3)
-(test (run '{+ 1 2}) 3)
-(test (run '{+ {+ 1 2} 3}) 6)
-(test (run '{+ 1 {+ 2 3}}) 6)
-(test (run '{+ 1 {+ {+ 2 3} 4}}) 10)
-(test (run '{++ 1}) 2)
-(test (run '{+ 1 {+ {+ 2 {+ 3 {++ 1}}} 4}}) 12)
+(test (n_run '1) 1)
+(test (n_run '2.3) 2.3)
+(test (n_run '{+ 1 2}) 3)
+(test (n_run '{+ {+ 1 2} 3}) 6)
+(test (n_run '{+ 1 {+ 2 3}}) 6)
+(test (n_run '{+ 1 {+ {+ 2 3} 4}}) 10)
+(test (n_run '{++ 1}) 2)
+(test (n_run '{+ 1 {+ {+ 2 {+ 3 {++ 1}}} 4}}) 12)
+
+; ------------------------------------ ;
+
+
+
+; ==================================== ;
+;     Sec. 7: Building a language      ;
+; ==================================== ;
+
+; In this section of the file, we will review how
+; some of the elements and features that a programming
+; language needs are implemented. For this, we will extend the
+; small language defined in the previous section.
+;
+; Note: Because of how these features and elements will be implemented
+; via Scheme, the notes will be structured a bit differently.
+
+; # The Language Grammar
+#|
+Grammar for expressions:
+<expr> ::= <num>
+         | <id-symbol>                        ; For identifiers
+         | {+ <expr> <expr>}
+         | {- <expr> <expr>}
+         | {if0 <expr> <expr> <expr>}
+         | {with {<id-symbol> <expr>} <expr>} ; For identifiers
+         | {<fn-id-symbol> <expr>}            ; For predefined functions
+|#
+
+; ===     (7.01) Identifiers       === ;
+
+; Extension   : Support for local identifiers, similar to 'let' in Scheme.
+; Syntax      : with {<id> <val-expr>} <body>
+; Explanation : Using this syntax, the value assigned to <id> will be replaced
+;               for the result of interpreting the <val-expr> in every corresponding
+;               instance of it in <body>.
+
+; In order to support local identifiers in the language, we will have to implement
+; an algorithm to replace the identifiers with their values in the body of the
+; 'with' block. This algorithm will replace eagerly, which means that all the
+; instances will be swapped with the corresponding values before executing any
+; code. Also, since we want these new identifiers to obey rules of scope
+; (only existing in the body of the 'with' block that defined it), we have to
+; be careful with when we replace, because a single identifier can be redefined
+; in nested 'with' blocks. For example: { with {x 2} { with {x 3} x } } should
+; return 3, but { with {x 2} { with {y 3} x } } should return 2.
+
+; The algorithm described is called 'Substitution algorithm' and it's implemented
+; later in the 'subs' function. Some things worth noting about it and it's implementation:
+
+; • It replaces values in *expressions*, so it works with an alredy parsed program (in the AST).
+
+; • In the grammar definition and parser, a 'with' case was added.
+
+; • In the 'subs' function, in the 'id' case, the value is only substituted if the symbols are equal.
+
+; • In the 'subs' function, in the 'with' case (which implies nested 'with' blocks), the value is always replaced
+;   in the value expression of the nested 'with', but in the body only if the symbols are different
+;   (this makes it so the scope rules are followed, and redefinitions behave as expected).
+
+; • In the interpreter, a 'with' case was added, and it works by first interpreting the <val-exp> of the 'with' block (which
+;   returns a number, so we wrap it in a 'num' so it can be placed in the AST), then applying the 'subs' function (with
+;   the value found previously and the id) to the body of the 'with' block, and finally interpreting the resulting expression.
+
+; === (7.02) Predefined Functions  === ;
+
+; Extension   : Support for predefined (built-in) functions, written in the language.
+; Syntax      : Calls: <fn-id> <arg-exp> | Def (in Scheme): (fundef '<fn-id> '<fn-arg> (parse '<fn-body>))
+; Explanation : This feature makes it possible to write functions (using the language) as a predefined list,
+;               and calling them in programs, similar to built-in functions in other languages.
+
+; To support these predefined functions, we will have to add multiple things to the language, the ones to define
+; the syntax for calls and the ones to be able to define the functions themselves.
+
+; 1) To support function definition in the language backend:
+; First, we add a new type to our grammar ('FunDef'), which has the function id, argument and body as fields.
+; Then, since the functions are inside a predefined list that will be available for the interpreter, we need to
+; be able to search a function definition given it's id, so the function 'lookup-fundef' is added to do just that.
+; Also, to actually call and execute the functions, the function 'apply-fundef' is implemented, which works by
+; first using the substitution algorithm to replace the argument id for it's value in the function body, and then
+; interpreting the result of the substitution. Finally, we define 'pre-defined-funs', a list with all
+; the definitions of our built-in functions.
+
+; Note: Since the 'FunDef' type expects the body to be of type 'Exp' (an therefore, all the functions that work
+; with 'FunDef's will as well), when a new function is defined, the body has to be parsed. For example, if we
+; wanted to define a function that added 1 to a number n, we would write (fundef 'add1 'n (parse '{+ n 1}))
+; insted of just (fundef 'add1 'n '{+ n 1}).
+
+; 2) To support function calls:
+; We start by adding a new case to our 'Exp' type ('call') with two arguments, the function id and the expresion for the
+; argument. Then, we add the respective case to the parser, substitution function and interpreter. From these, the only
+; one worth noting is the case for the interpreter: it works by calling 'apply-fundef' with the first argument being the
+; return of calling 'lookup-fundef' (to see if the function actually exists), the second being the result of interpreting
+; the argument expresion (wrapped in a 'num', since it will be used inside the call to 'subs' in 'apply-fundef'), and
+; the last one being the list of predefined functions. It's also worth noting that, since the 'apply-fundef' function
+; also calls 'interpret', a recursive predefined function or a predefined function that calls another one will work as
+; expected.
+
+; ==================================== ;
+
+; # Grammar Definition
+
+; ## General expresions
+(define-type Exp
+  [num  (n number?)]
+  
+  [plus (left Exp?) (right Exp?)]
+  
+  [minus (left Exp?) (right Exp?)]
+  
+  [if0 (econd Exp?) (etrue Exp?) (efalse Exp?)]
+  
+  [id  (s symbol?)]
+  
+  [with (id-symbol symbol?) (sexp Exp?) (bexp Exp?)]
+  
+  [call (fn-id-symbol symbol?) (aexp Exp?)]
+)
+
+; ## Type for predefined functions
+(define-type FunDef
+      [fundef  (fun-name symbol?) (arg-name symbol?) (body Exp?)]
+)
+
+; # Utility Functions
+
+; ## Substitution algorithm
+(define (subs sym value expr)
+  (match expr
+    [(num n) expr]
+    
+    [(id s) (if (symbol=? sym s)
+                value
+                expr)]
+    
+    [(plus l r) (plus (subs sym value l)
+                      (subs sym value r)) ]
+    
+    [(minus l r) (minus (subs sym value l)
+                        (subs sym value r)) ]
+    
+    [(if0 c t f) (if0 (subs sym value c)
+                     (subs sym value t)
+                     (subs sym value f))]
+    
+    [(with s se be) (if (symbol=? s sym)
+                        (with s (subs sym value se) be)
+                        (with s (subs sym value se) (subs sym value be)))]
+    
+    [(call fun-id ae) (call fun-id (subs sym value ae))]
+  )
+)
+
+; ## For predefined functions support
+(define (lookup-fundef f funs)
+  (match funs
+    ['() (error 'lookup-fundef "function not found: ~a" f)]
+    
+    [(cons (fundef fn _ _) rest)
+     (if (symbol=? fn f)
+         (car funs)
+         (lookup-fundef f rest))]
+  )
+)
+
+(define (apply-fundef fd arg-val funs)
+  (match fd
+    [(fundef _ arg-name fun-body)
+     (interpret (subs arg-name arg-val fun-body) funs)]
+  )
+)
+
+; # Parser
+(define (parse s-expr)
+  (match s-expr
+    [(? number?) (num s-expr)]
+    
+    [(? symbol?) (id s-expr)]
+    
+    [(list '+ l r) (plus (parse l) (parse r))]
+    
+    [(list '- l r) (minus (parse l) (parse r))]
+    
+    [(list 'if0 c t f) (if0 (parse c) (parse t) (parse f))]
+
+    [(list 'with (list sym se) be) (with sym (parse se) (parse be))]
+
+    [(list fn-id-symbol ae) (call fn-id-symbol (parse ae))]
+    
+    [else (error 'parse "syntax error")]
+  )
+)
+
+; # Interpreter
+(define (interpret expr funs)
+  (match expr
+    [(num n) n]
+    
+    [(id s)  (error 'interpret "free identifier")]
+    
+    [(plus l r) (+ (interpret l funs) (interpret r funs))]
+    
+    [(minus l r) (- (interpret l funs) (interpret r funs))]
+    
+    [(if0 c t f) (if (eq? (interpret c funs) 0)
+                     (interpret t funs)
+                     (interpret f funs))]
+    
+    [(with s se be) (interpret (subs s (num (interpret se funs)) be) funs)]
+    
+    [(call fun-id ae) (apply-fundef (lookup-fundef fun-id funs)
+                                    (num (interpret ae funs))
+                                    funs)]
+  )
+)
+
+; # Program Runner and Testing
+(define (run funs prog)
+  (interpret (parse prog) funs)
+)
+
+(define pre-defined-funs
+  (list
+   (fundef 'add1 'n (parse '{+ n 1}) )
+   (fundef 'sum 'n (parse '{if0 n 0 {+ n {sum {- n 1}}}}) )
+  )
+)
+ 
+; ## Tests
+
+; ### For basic functionality
+(test (run pre-defined-funs '2) 2)
+(test (run pre-defined-funs '{+ 1 2}) 3)
+(test (run pre-defined-funs '{- 1 2}) -1)
+(test (run pre-defined-funs '{if0 {- 2 2} 0 1}) 0)
+(test (run pre-defined-funs '{if0 {- 3 2} 0 1}) 1)
+
+; ### For identifiers (7.01)
+(test (run pre-defined-funs '{with {x 2} {+ x x}}) 4)                        ; Basic test
+(test (run pre-defined-funs '{with {x 2} {with {y 3} {+ x y}}}) 5)           ; Nested non colliding withs 1
+(test (run pre-defined-funs '{with {x 2} {with {y 2} {if0 {- x y} 5 7}}}) 5) ; Nested non colliding withs 2
+(test (run pre-defined-funs '{with {x 2} {with {x 3} x}}) 3)                 ; Local scope (x redefined)
+(test (run pre-defined-funs '{with {x 2} {with {y {+ x 2}} y}}) 4)           ; Sustitution for non colliding symbols (assingment)
+(test (run pre-defined-funs '{with {x 2} {with {y {+ x 2}} x}}) 2)           ; Sustitution for non colliding symbols (body)
+
+; ### For predefined functions (7.02)
+(test (run pre-defined-funs '{+ {add1 2} 1}) 4)
+(test (run pre-defined-funs '{sum 3}) 6)
 
 ; ------------------------------------ ;
